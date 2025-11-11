@@ -1,0 +1,779 @@
+---
+title: "Customer Deduplication"
+author: "Lebintiti Kobe"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+# Project Brief
+
+------------------------------------------------------------------------
+
+> You have been hired by Ebuy Emporium, a new e-commerce startup. They have been up and running for a month and have had unexpected success.
+>
+> They are starting to have an active interest in their customer base :
+>
+> Who are their customers? What do they buy? What drives their purchasing behavior ?
+>
+> Before they do any serious analysis, however, they need to be able to count their customers, which is proving more difficult than anticipated.
+>
+> One problem is there are multiple sources of customer data , which are:
+>
+> -   The e-commerce platform’s customer database, where customer details are recorded when they sign up for an account online. This is where most of the customers’ details should be found
+>
+> -   The in-house CRM system, where customer details are recorded when they make a purchase over the phone or are otherwise onboarded as customers (except as a result of purchasing online with a registered account) .
+>
+> -   The raw transaction data, which we will hereafter refer to as “purchases” or “sales,” and which also contains purchases made “as a guest,” meaning customer records are not explicitly created at the time of purchase . The way that the data seperate guests from other customers is by giving other customers ids , while assigning no ids to guests . Also , only guest have customer details while registered / crm customers do not . 
+
+------------------------------------------------------------------------
+
+# Results Driven Approach 
+
+## Understanding the Problem 
+
+### 1. "count their customers" :
+
+Here , we thinking we should come up with a dataset that allows our stakeholders to count all their customers . Meaning , we need a dataset that combines all customers that are spread across multiple databases . 
+We thinking of our best estimate of a dataset in which each distinct customer is one record / row , one row per distinct customer 
+
+### 2. kinds of customers 
+
+-  Customers that signed up (Registered Online)
+-  Customers in CRM system (CRM) customers
+-  Customers that made purchases
+-  Customers that made purchases as guests (Guest Customers)
+
+### 3. Assumptions based of data 
+
+-  Since customers can make purchases as guests , then there is a chance a customer made a purchase as a guest then later registered then made purchase as registered customer / later made purchase over phone . So we can expect duplicates in guests , customer database and crm database 
+
+-  Also a registered customer may have purchased over phone , so we can expect duplicates between crm and customer database 
+
+-  In online systems , most systems when a customer is registering they can type whatever as their name , also they allowed to make typos , and if same customer made purchase over phone , then entered details may differ because of typos and mispellings . 
+
+
+## Plan 
+
+1. Explore and validate all datasets . Make sure all assumptions about data hold . 
+
+2. Decide on the common schema our dataset should have . Here since the goal is just to count customers nothing else , we thinking of just including columns we will use for deduplication , columns for data lineage (indicators for each data) . So customer details and id (dedplication) then indicator columns for data lineage . 
+
+2. Seperate all possible customers into their own datasets , Add customer type indicator variables for data lineage , Remove exact duplications then recombine them into one full dataset .
+(Here since guests are from purchase dataset , they will two indicators , purchases and guest)
+
+3. Deduplicate our customers , meaning we keep one customer from customers with same details but different ids . But here we need a column to show all linked_ids (dropped customers ids) so when other people they can verify that we indeed removed the right customers / for data lineage
+
+
+# Validate Data 
+
+## Purchase Data
+
+Make sure all assumptions holds , there are no business logic violation e.t.c 
+
+```{r}
+options(scipen = 999)
+require(here)
+require(tidyverse)
+require(janitor)
+require(purr)
+require(skimr)
+
+purchases <- read.csv(here("data/purchases.csv")) %>% as_tibble()
+glimpse(purchases)
+```
+
+### Basic Cleaning
+
+Make sure character variables are in a consistent format , dates are datest , e.t.c
+
+```{r}
+require(lubridate)
+
+purchases <- purchases %>%
+  mutate(event_time = as_datetime(event_time),
+         across(is.character,
+                ~str_to_lower(.x)%>%
+                  trimws()),
+         across(is.character,
+                ~ifelse(.x=="",NA_character_,.x)))
+glimpse(purchases)
+```
+
+### Explore the data
+
+```{r}
+skim(purchases)
+```
+
+-  We have 70k+ records over 60k+ sessions . Makes senses , customers can purchase more than 1 item per session . 
+
+Though our data has no missing product and category id : 
+
+-  We have over 16k+ missing category_codes 
+
+-  We have over 5K missing brands of items purchased
+
+This suggests a possible database with these missing brands and category codes 
+
+-  Prices range from 0.8c to 2.5K , no business violations here 
+
+-  We have around 18k records with missing customer ids , which corresponds to purchases made by guests 
+-  We have around 53K records with missing customer details which suggest purchases made by registered/crm customers
+
+---
+
+Validate assumption that guest purchases will always have missing id , while other purchases wont have customer details but ids , and that these cant be true at the same time , a record cant be a purchase made by guest and registered customers at the same time 
+
+```{r}
+purchases <- purchases %>%
+  mutate(is_guest = is.na(customer_id))
+
+purchases %>%
+  filter(is_guest & !is.na(customer_id))
+purchases %>%
+  filter(!is_guest & is.na(customer_id))
+```
+
+It returns an empty dataset showing that we cant have registered customer purchase that is guest purchase at the same time 
+
+```{r}
+purchases %>%
+  janitor::tabyl(is_guest)
+```
+
+> Also , 25% of our purchases are by guests , the rest are by registered customers 
+
+---
+
+Figure out approxiamate number of possible guests and registered customers that made purchases
+
+```{r}
+guests <- purchases %>%
+  select(starts_with("guest"))%>%
+  na.omit()%>%
+  distinct()
+
+registered <- purchases %>%
+  select(customer_id)%>%
+  na.omit()%>%
+  distinct()
+
+
+n_total <- count(guests)+count(registered)
+n_guest <- count(guests)
+n_reg <- count(registered)
+
+n_total
+(nrow(guests)/(nrow(guests)+nrow(registered)))*100
+```
+
+> We have around 33k distinct customers that made purchases , assuming we no duplicates . And out of these , 25% are guests , rest are registered customers 
+>
+So its safe to assume the upper bound of all customers will be aound 33K , the number can be less if there are duplicates , or more if there are customers that a registered but did not make purchases 
+
+
+## CRM and Customer Data
+
+```{r}
+crm <- read.csv(here("data/crm_export.csv")) %>% as_tibble()
+customer <- read.csv(here("data/customer_database.csv")) %>% as_tibble()
+
+glimpse(crm)
+glimpse(customer)
+```
+
+We see that CRM and Customer database have same customer details as for guest detail except , they have an extra AGE column . 
+
+### Basic Cleaning
+
+Make sure all character variables are in a consistent format e.t.c 
+
+```{r}
+crm <- crm %>%
+  mutate(across(is.character,
+                ~str_to_lower(.x)%>%
+                  trimws()%>%
+                  replace(.x=="",NA_character_)))
+
+customer <- customer %>%
+  mutate(across(is.character,
+                ~str_to_lower(.x)%>%
+                  trimws()%>%
+                  replace(.x=="",NA_character_)))
+```
+
+### Basic Validation 
+
+```{r}
+skim(crm)
+skim(customer)
+
+summary(crm)
+```
+
+We have around 8K customers in CRM database
+We have around 24K customers in Customer Database
+
+---
+
+Both CRM and Customer databases have customers with Age of Zero , which cant be possible , lets check these . Others are too old to be using online shopping , but its not impossible . 
+
+```{r}
+crm %>%
+  filter(age==0)
+crm %>%
+  filter(age>90)
+
+customer %>%
+  filter(age==0)
+customer %>%
+  filter(age>90)
+```
+
+> 120 in CRM and 330 in Customer database . We need to check these , they may be system errors , or customers did not complete their profiles . 
+
+---
+
+Lets see how many duplicate customers are in CRM 
+
+```{r}
+crm %>%
+  count()
+
+crm %>%
+  distinct()%>%
+  count()
+
+crm %>%
+  count() - crm %>% 
+              select(-customer_id)%>%
+              distinct()%>%
+              count()
+```
+
+So about 400 CRM customers have duplicate customer details but same ids , meaning this are potentially real duplicate people since age and postcode were factored 
+
+```{r}
+customer %>%
+  count()
+
+customer %>%
+  distinct()%>%
+  count()
+
+customer %>%
+  count()- customer %>%
+  select(-customer_id)%>%
+  distinct()%>%
+  count()
+```
+
+So about 3.5K Customer database customers have duplicate details but same ids , meaning this are potentially real duplicate people since age and postcode were factored .
+
+We could de-duplicate these when looking at individual dataset , but we will do it once all datasets are combined , is easier that way 
+
+# Decide on the common schema our datasets should follow 
+
+```{r}
+purchases
+crm
+customer
+```
+
+We just need id and all customer details columns for deduplications , so we can figure if two customers are different or not .
+Then we need indicator variables for each dataset (customer type) for data lineage purposes 
+
+# Seperate each customer into their own dataset 
+
+```{r}
+guests_c <- purchases %>%
+  select(starts_with("guest"))%>%
+  na.omit()%>%
+  distinct()
+colnames(guests_c) <- colnames(crm %>% select(-age,-customer_id))
+
+purchases_c <- purchases %>%
+  filter(!is.na(customer_id))%>%
+  select(customer_id)%>%
+  distinct()
+
+crm_c <- crm %>%
+  distinct()
+
+customer_c <- customer %>%
+  distinct()
+```
+
+---
+
+Add indicators for customers that made purchases for data linkage 
+
+```{r}
+guests_c <- guests_c %>%
+  mutate(is_guest = T)
+
+purchases_c <- purchases_c %>%
+  mutate(in_purchase = T)
+```
+
+# Combine datasets 
+
+## 1. Guest and Purchases back to one
+
+```{r}
+all_customers <- purchases_c %>%
+  bind_rows(guests_c)%>%
+  mutate(age=NA_real_)
+
+all_customers %>%
+  slice_sample(n=20)
+```
+
+---
+Replace NULLs in is_guest and is_purchase details 
+
+```{r}
+all_customers <- all_customers %>%
+  mutate(is_guest = replace_na(is_guest,F),
+         in_purchase = replace_na(in_purchase,T))
+
+all_customers %>%
+  slice_sample(n=20)
+```
+
+## 2.Merge CRM with all_customers data
+
+```{r}
+all_customers <- all_customers %>%
+  left_join(y=crm_c,
+            by = "customer_id",
+            suffix = c("_sales","_crm"))
+
+all_customers %>%
+  slice_sample(n=20)
+```
+
+```{r}
+all_customers <- all_customers %>%
+  mutate(in_crm_base = !is_guest & !is.na(surname_crm) | !is.na(age_crm))
+
+all_customers %>%
+  slice_sample(n=20)
+
+all_customers %>%
+  count(in_crm_base)
+
+crm_c %>%
+  count()
+```
+
+We managed to find 7K missing customer details in CRM for missing details in purchases data out of 7.8K CRM customers
+
+---
+
+Tidy up our merged dataset 
+
+```{r}
+
+all_customers <- all_customers %>%
+  mutate(first_name_sales = ifelse(in_crm_base , first_name_crm ,first_name_sales),
+         surname_sales = ifelse(in_crm_base , surname_crm , surname_sales),
+         postcode_sales = ifelse(in_crm_base, postcode_crm , postcode_sales),
+         age_sales = ifelse(in_crm_base , age_crm , age_sales))%>%
+  select(-ends_with("_crm"))%>%
+  rename("first_name" = first_name_sales,
+         "surname" = surname_sales,
+         "postcode" = postcode_sales,
+         "age" = age_sales)
+
+all_customers %>%
+  filter(in_crm_base)
+```
+
+### 3. Non-Matched CRM customers 
+
+Find customers in CRM which we not matched in purchases data 
+
+```{r}
+no_match_crm <- setdiff(unique(crm_c$customer_id),
+        unique(all_customers$customer_id)) 
+
+no_match_crm %>% length()
+```
+
+So we have 700 customers in CRM that did not make purchases 
+---
+
+Add these to our merged data
+
+```{r}
+all_customers <- all_customers %>%
+  bind_rows(crm_c %>%
+              filter(customer_id %in% no_match_crm))
+
+all_customers <- all_customers %>%
+  mutate(in_crm_base = replace_na(in_crm_base,T),
+         in_purchase = replace_na(in_purchase,F),
+         is_guest = replace_na(is_guest,F))
+
+all_customers %>%
+  select(starts_with("in_"),is_guest) %>%
+  is.na()%>%
+  any()
+```
+
+
+
+## 3.Merge Customer database with all_customers data
+
+```{r}
+all_customers <- all_customers %>%
+  left_join(y=customer_c,
+            by = "customer_id",
+            suffix = c("_sales","_cust"))
+
+all_customers %>%
+  slice_sample(n=20)
+```
+
+```{r}
+all_customers <- all_customers %>%
+  mutate(in_customer_base = !is_guest & !is.na(surname_cust) | !is.na(age_cust))
+
+all_customers %>%
+  slice_sample(n=20)
+
+all_customers %>%
+  count(in_customer_base)
+
+customer_c %>%
+  count()
+```
+
+We managed to find 22K missing customer details in Customer database for missing details in purchases data out of 23K CRM customers
+
+---
+
+Tidy up our merged dataset 
+
+```{r}
+
+all_customers <- all_customers %>%
+  mutate(first_name_sales = ifelse(in_customer_base, first_name_cust ,first_name_sales),
+         surname_sales = ifelse(in_customer_base, surname_cust , surname_sales),
+         postcode_sales = ifelse(in_customer_base, postcode_cust , postcode_sales),
+         age_sales = ifelse(in_customer_base, age_cust , age_sales))%>%
+  select(-ends_with("_cust"))%>%
+  rename("first_name" = first_name_sales,
+         "surname" = surname_sales,
+         "postcode" = postcode_sales,
+         "age" = age_sales)
+
+all_customers %>%
+  filter(in_customer_base)%>%
+  select(-in_purchase,-in_crm_base)
+```
+
+### 3. Non-Matched Customer database customers 
+
+Find customers in Customer database which we not matched in purchases data 
+
+```{r}
+no_match_cust <- setdiff(unique(customer_c$customer_id),
+        unique(all_customers$customer_id)) 
+
+no_match_cust %>% length()
+```
+
+So we have 1400 customers in CRM that did not make purchases 
+---
+
+Add these to our merged data
+
+```{r}
+all_customers <- all_customers %>%
+  bind_rows(customer_c %>%
+              filter(customer_id %in% no_match_cust))
+
+all_customers <- all_customers %>%
+  mutate(in_crm_base = replace_na(in_crm_base,F),
+         in_purchase = replace_na(in_purchase,F),
+         is_guest = replace_na(is_guest,F),
+         in_customer_base = replace_na(in_customer_base,T))
+
+all_customers %>%
+  select(starts_with("in_"),is_guest) %>%
+  is.na()%>%
+  any()
+```
+
+## Find customers in purchases data but not in RM nor Customer databases 
+
+```{r}
+all_customers %>%
+  filter(if_any(contains("name"),~is.na(.))) %>%
+  count()
+```
+
+We have 1248 customers that made purchases but are neither in CRM nor Customer Databases . 
+This suggest maybe an existance of some database with all these info . 
+
+# Deduplication 
+
+Now that we have our merged data , its time to do some de-duplication .
+We have seen in CRM and Customer Database , we had customers with same details but with different id , we need to remove these duplicate customers.
+
+Before we do this we need to decide which variable we going to use for deduplication ...
+In CRM / Customer database , we decided that customers with same names , postcode and age are the same ,  which is fairly reasonable , but guests customers have do not have age variable . 
+
+So if we want perform deduplication across all types of customers then we do make sure variables we use are available for all types of customers 
+Here , we will have to use names and postcode in order to include all customers , but this will not be as accurate as when we included age column ...
+
+Here , we assume two customers with the same names and postcodes are the same . Which is not necessarily true in real life , but its rare , so its not that bad of an assumption
+
+Remember , that in order to be transparent and have clear data lineage , we need to link ids ...
+But guests customers dont have these ids , so we create dummy ids for them ...
+A simple way to do this is by assigning negative ids to all unique guest customers 
+
+## Assign Dummy Ids to records with no ids 
+
+```{r}
+n_guest <- n_guest %>% pull(n)
+dummy_ids <- seq(-1,-n_guest,-1)
+
+all_customers <- all_customers %>%
+  mutate(customer_id = ifelse(is_guest,dummy_ids,customer_id))
+
+all_customers %>%
+  slice_sample(n=20)
+```
+
+## Manual Exact Deduplication 
+
+Here , we assume that customers with the same names and postcode but different ids are the same customer 
+
+
+---
+
+First find all duplicate records and create linked_ids for them and drop the duplicate with preserving linked_ids
+
+```{r}
+exact_dupes <- all_customers %>%
+  na.omit()%>%
+  group_by(first_name,surname,postcode)%>%
+  filter(n()>1)%>%
+  mutate(linked_ids = list(customer_id))%>%
+  distinct(first_name,surname,postcode,.keep_all = T)%>%
+  ungroup()%>%
+  select(customer_id,linked_ids)
+
+exact_dupes %>%
+  count()
+```
+
+4.5K customer details have duplicates in our purchases data
+
+---
+
+Join the linked_ids with our all customers dataset
+
+```{r}
+all_customers <- all_customers %>%
+  left_join(y=exact_dupes,
+            by = "customer_id")
+
+all_customers%>%
+  select(-starts_with("in_"))%>%
+  slice_sample(n=20) %>%
+  mutate(linked_ids = paste(linked_ids))
+```
+
+Make sure that we dont got redundant ids in linked_ids . Menaing a current customer_id should not be in the linked_ids list
+
+```{r}
+all_customers %>%
+  mutate(dupe_ids = 
+           map2(linked_ids,customer_id,
+                ~setdiff(.x,.y)))%>%
+  rowwise()%>%
+  mutate(num_dupes = length(dupe_ids))%>%
+  ungroup()%>%
+  select(-starts_with("in_"),-postcode,-is_guest)%>%
+  filter(num_dupes>2)%>%
+  mutate(dupe_ids = paste(dupe_ids))
+  
+all_customers <- all_customers %>%
+  mutate(dupe_ids = 
+           map2(linked_ids,customer_id,
+                ~setdiff(.x,.y)))%>%
+  rowwise()%>%
+  mutate(num_dupes = length(dupe_ids))%>%
+  ungroup()
+
+```
+
+---
+
+Drop duplicate in our all customers dataset
+
+> distinct() find all distinct values including NA values , if we apply it to our dataset , it will only keep one out of all customers with no customer details , so we seperate these customers first then apply distinct , then rejoin these customers 
+
+```{r}
+na_customers <- all_customers %>%
+  filter(if_any(c(first_name,surname,postcode),
+                  ~is.na(.)))%>%
+  distinct(customer_id ,.keep_all = T)%>%
+  select(-linked_ids)
+
+all_customers <- all_customers %>%
+  distinct(first_name,surname,postcode,.keep_all = T)%>%
+  select(-linked_ids)
+
+all_customers <- all_customers %>%
+  bind_rows(na_customers)%>%
+  distinct()
+
+all_customers %>%
+  count()
+```
+
+We have a total of 28.6K unique customers after removing their exact duplicates 
+
+---
+
+# Advanced De-duplication 
+
+Instead of just removing exact duplicates , we can take a step further . 
+We can use method that detect if two entities are the same , that takes into consideration typos , mispellings , abbreviations e.t.c 
+
+There are package out there to help us achieve this . 
+In R im going to use reclin2 packages , reclin - record linkage 
+
+
+## Now basic steps of record linkage 
+
+1. Blocking (create candidate pair , blocking by some variable)
+2. Comparison rules 
+3. Similarity Scores Computation (use EM model for this)
+4. Picking Threshold
+5. Evaluating pairs for chosen threshold
+6. Getting our final pairs
+
+Also unlike distinct() , reclin2 does not match NA values , which is nice to know 
+
+## Lets get it 
+
+```{r}
+require(reclin2)
+
+## Create candidate pair with Blocking to compute pairs 
+## only if they have same value for the block variable
+## To speed up computation 
+
+pairs <- pair_blocking(all_customers,
+                       on = "postcode",
+                       deduplication = T)
+pairs
+
+
+## Set up comparison rules 
+## 
+
+pairs <- compare_pairs(pairs = pairs, 
+                       on = c("first_name",
+                              "surname"),
+                       comparators = list(cmp_jarowinkler(threshold = 1),
+                                          cmp_jarowinkler(threshold = 1)))
+
+pairs
+
+## compute weights 
+## 
+pairs <- score_simple(pairs,variable = "scores",
+                      on= c("first_name",
+                              "surname"))
+pairs
+
+## select pairs for given threshold
+## 
+pairs <- select_threshold(pairs,"is_duplicated",score = "scores",threshold = 1.8)
+
+pairs %>%
+  filter(is_duplicated)
+
+## GET ORIGINAL DATA WITH MATCHES INDICATED as clusters 
+## 
+results <- deduplicate_equivalence(pairs,
+                                   "cluster",
+                                   "is_duplicated") %>%
+  as_tibble()
+
+##
+results %>%
+  group_by(cluster)%>%
+  filter(n()>1)%>%
+  select(-is_guest,-in_purchase,-in_crm_base,-in_customer_base)%>%
+  arrange(cluster)%>%
+  print(n=100)%>%
+  filter(num_dupes > 0)
+```
+
+Im happy with the results 
+
+```{r}
+final_data <- results %>%
+  group_by(cluster)%>%
+  mutate(other_ids = list(customer_id),
+         other_ids = map2(
+           other_ids , customer_id , 
+           ~setdiff(.x,.y)))%>%
+  rowwise()%>%
+  mutate(n_dup = length(other_ids))%>%
+  ungroup()%>%
+  group_by(cluster)%>%
+  slice_head(n=1)%>%
+  arrange(cluster)%>%
+  ungroup()
+
+final_data %>%
+  select(customer_id , dupe_ids , other_ids)
+
+
+final_data <- final_data %>%
+  mutate(
+    all_linked_ids = map2(dupe_ids, other_ids, ~ {
+      combined <- unique(c(.x, .y))
+      if (length(combined) == 0) NULL else combined
+    })
+  )%>%
+  select(-dupe_ids,-n_dup,-num_dupes,-cluster,-other_ids)
+
+
+final_data <- final_data %>%
+  relocate(-starts_with("in_"))%>%
+  relocate(-is_guest)
+
+final_data <- final_data %>%
+  rowwise()%>%
+  mutate(all_linked_ids = paste0("[",paste(all_linked_ids , collapse = ","),"]"))%>%
+  mutate(all_linked_ids = ifelse(all_linked_ids == "[]",NA,all_linked_ids))%>%
+  mutate(is_registered = ifelse(in_crm_base | in_customer_base , T , F))%>%
+  ungroup()
+
+results %>% count() - final_data %>% count() 
+```
+
+We managed to remove an Extra 882 duplicates using reclin2
+
+
+With reclin2 we mane
+
+---
+
+Save data model to csv
+
+```{r}
+write.csv(x = final_data , here("data/data_model.csv"),row.names = F)
+```
+
