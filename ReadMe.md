@@ -159,7 +159,7 @@ distinct customer
 |------------------------|--------|
 | Initial Records        | ~33K   |
 | Final Unique Customers | ~27.8K |
-| Duplicates Removed     | ~6.2K  |
+| Duplicates Removed     | ~5.2K  |
 | Data Sources Merged    | 3      |
 
 Found **~27.8K distinct customers** after de-duplication
