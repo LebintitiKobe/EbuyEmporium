@@ -5,10 +5,6 @@ Lebintiti Kobe
 - [Analysis Scope](#analysis-scope)
 - [Results Driven Approach](#results-driven-approach)
   - [Understanding the Problem](#understanding-the-problem)
-    - [1. “count their customers” :](#1-count-their-customers-)
-    - [2. kinds of customers](#2-kinds-of-customers)
-    - [3. Assumptions based of data](#3-assumptions-based-of-data)
-    - [4. Plan](#4-plan)
 - [Data Landscape](#data-landscape)
 - [Executive Summary](#executive-summary)
   - [Key Metrics](#key-metrics)
@@ -17,25 +13,12 @@ Lebintiti Kobe
   Flow](#customer-de-duplication-process-flow)
   - [STEP 1: Data Validation &
     Cleaning](#step-1-data-validation--cleaning)
-    - [Details](#details)
-    - [Key Findings](#key-findings)
   - [STEP 2: Data Separation & Schema
     Design](#step-2-data-separation--schema-design)
-    - [Details](#details-1)
-    - [Why This Matters](#why-this-matters)
   - [STEP 3: Progressive Data Merging](#step-3-progressive-data-merging)
-    - [Details](#details-2)
-    - [Merge Strategy](#merge-strategy)
-  - [STEP 4: Exact Deduplication](#step-4-exact-deduplication)
-    - [Details](#details-3)
-    - [Deduplication Logic](#deduplication-logic)
-    - [Example](#example)
+  - [STEP 4: Exact De-duplication](#step-4-exact-de-duplication)
   - [STEP 5: Fuzzy Matching (Advanced)](#step-5-fuzzy-matching-advanced)
-    - [Details](#details-4)
-    - [Why Fuzzy Matching?](#why-fuzzy-matching)
   - [STEP 6: Final Dataset Creation](#step-6-final-dataset-creation)
-    - [Details](#details-5)
-  - [Final Dataset Structure](#final-dataset-structure)
 - [Known Data Quality Issues](#known-data-quality-issues)
 - [Next Steps (Possible
   Improvements)](#next-steps-possible-improvements)
@@ -115,26 +98,28 @@ distinct customer
 
 ### 4. Plan
 
-1.  Explore and validate all datasets :
+1.  ***Explore and validate all datasets*** :
 
 - Make sure all assumptions about data hold , clean and process e.t.c
 
-2.  Decide on the common schema our dataset should have :
+2.  ***Decide on the common schema our dataset should have :***
 
 - The goal is just to count customers, included columns we will use for
   deduplication , columns for data lineage (indicators for each data) .
 - Customer details and id (deduplication) then indicator columns for
   data lineage .
 
-2.  Separate all possible customers into their own datasets , Add
+3.  ***Separate all possible customers into their own datasets , Add
     customer type indicator variables for data lineage , Remove exact
-    duplications then recombine them into one full dataset .
+    duplications then recombine them into one full dataset .***
 
-3.  Deduplicate our customers , meaning we keep one customer from
-    customers with same details but different ids . But here we need a
-    column to show all linked_ids (dropped customers ids) so when other
-    people use the data model they could verify that we indeed removed
-    the right customers / for data lineage and transparency
+4.  ***Deduplicate our customers:***
+
+- meaning we keep one customer from customers with same details but
+  different ids . But here we need a column to show all linked_ids
+  (dropped customers ids) so when other people use the data model they
+  could verify that we indeed removed the right customers / for data
+  lineage and transparency
 
 ------------------------------------------------------------------------
 
@@ -200,8 +185,8 @@ in CRM or / and Customer Databases**
 
 ### Key Findings
 
-- 18K purchases with missing customer_id = guest purchases
-- 53K purchases with missing customer details = registered/CRM customers
+- 18K purchases with missing customer_id - guest purchases
+- 53K purchases with missing customer details - registered/CRM customers
 - Confirmed business logic: guests never have IDs, registered customers
   never have inline details
 
@@ -248,7 +233,7 @@ additional information from new sources. Customer IDs were used as the
 primary key, with data lineage flags tracking which systems each
 customer appeared in.
 
-## STEP 4: Exact Deduplication
+## STEP 4: Exact De-duplication
 
 ### Details
 
@@ -260,22 +245,6 @@ customer appeared in.
 - **Kept one record** per unique customer combination
 - **Maintained data lineage** by storing all dropped IDs in linked_ids
   field
-
-### Deduplication Logic
-
-**Assumption:** Customers with identical first name, surname, and
-postcode are the same person
-
-This is a reasonable assumption for most cases, though it may
-occasionally group unrelated people (e.g., family members at same
-address).
-
-### Example
-
-A customer who purchased as guest, then registered online, then called
-support would have 3 different IDs. After deduplication: - One final
-record with primary ID - linked_ids contains all 3 original IDs - Flags
-show presence in all 3 systems
 
 ## STEP 5: Fuzzy Matching (Advanced)
 
@@ -293,11 +262,15 @@ show presence in all 3 systems
 
 ### Why Fuzzy Matching?
 
-Exact matching misses real duplicates caused by: - **Typos:** “Jon
-Smith” vs “John Smith” - **Abbreviations:** “Wm Johnson” vs “William
-Johnson”  
-- **Misspellings:** “Smyth” vs “Smith” - **Data entry errors:** Extra
-spaces, missing letters
+Exact matching misses real duplicates caused by:
+
+- **Typos:** “Jon Smith” vs “John Smith”
+
+- **Abbreviations:** “Wm Johnson” vs “William Johnson”
+
+- **Misspellings:** “Smyth” vs “Smith”
+
+- **Data entry errors:** Extra spaces, missing letters
 
 ## STEP 6: Final Dataset Creation
 
@@ -307,12 +280,6 @@ spaces, missing letters
   matching
 - **Added is_registered flag** (TRUE if customer in CRM or Customer
   Database)
-- **Final output:** ~28,600 unique customers with complete lineage
-  tracking
-- **Reduction:** From ~33K initial distinct records to 28.6K true unique
-  customers
-
-## Final Dataset Structure
 
 Each record includes:
 
@@ -336,7 +303,7 @@ Each record includes:
 
 - We have over 5K missing brands of items purchased
 
-- This suggests possible existance of other database sthat may contain
+- This suggests possible existence of other databases that may contain
   the missing info
 
 2.  **Ages to young (age 0) and ages too old (100) :**
@@ -349,7 +316,7 @@ Each record includes:
 3.  **Method Used to find duplicates**
 
 - We assumed that customers with same names and postcode are the same .
-  This was dues to guest detail not containing age column
+  This was due to guest detail not containing age column
 - This is a reasonable assumption , but not as accurate as also
   considering age when finding duplicates .
 - If there is way to get extra detail on guest and registered customers
@@ -360,14 +327,16 @@ Each record includes:
 # Next Steps (Possible Improvements)
 
 The goal of this data model was to only count the number of customers .
-Thats is all its useful for right now
+That is all its useful for right now
 
 1.  **Extra KPI variables for advanced business problems**
 
 - Data models is only useful for counting customers so it only include
   customers personal details
-- In the future we can add KPI variable that will help with customer
-  segmentation and other advanced business problems
+- We can add appropriate variable / metrics if stakeholder want to solve
+  business problems beyond just counting customers
+- Example , duration of registration and last active date , to see which
+  customers are still active and loyal
 
 2.  **Resolve missing category_codes and brand names**
 
@@ -381,8 +350,8 @@ Thats is all its useful for right now
 
 4.  **Try to Improve method of finding duplicates**
 
-- We try to find even extra information of guest , crm and customer
-  database date that we can use to help deduplication process . Extra
+- We try to find even extra information of guest ,CRM and Customer
+  Database date that we can use to help de-duplication process . Extra
   information like Emails , Address e.t.c would be very helpful
 - We suggest to make certain info like age , to be required when
   customers make purchases as guest , so we do not have to worry about

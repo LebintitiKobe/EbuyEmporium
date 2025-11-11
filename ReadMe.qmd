@@ -3,7 +3,7 @@ title: "Ebuy Emporium-Customer Deduplication"
 author: "Lebintiti Kobe"
 format: gfm
 toc: true
-toc-title: Agenda
+toc-depth: 2
 editor: 
   markdown: 
     wrap: 72
@@ -96,11 +96,11 @@ distinct customer
 -   Customer details and id (deduplication) then indicator columns for
     data lineage .
 
-2.  ***Separate all possible customers into their own datasets , Add
+3.  ***Separate all possible customers into their own datasets , Add
     customer type indicator variables for data lineage , Remove exact
     duplications then recombine them into one full dataset .***
 
-3.  ***Deduplicate our customers:***
+4.  ***Deduplicate our customers:***
 
 -   meaning we keep one customer from customers with same details but
     different ids . But here we need a column to show all linked_ids
